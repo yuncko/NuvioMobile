@@ -19,13 +19,11 @@ concurrency:
 
 jobs:
   build-and-upload:
-    name: Build signed Android APKs
+    name: Build Android test APK
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
-      RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
 
     steps:
       - name: Check out the release source
@@ -53,10 +51,11 @@ jobs:
 
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           {
-            echo "## Android release build"
+            echo "## Android test APK build"
             echo
             echo "- Release tag: \`${RELEASE_TAG}\`"
             echo "- App version: \`${version}\`"
+            echo "- Variant: \`fullDebug\` (debug-signed)"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Java
@@ -68,72 +67,58 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Configure release signing and app properties
+      - name: Configure Android SDK properties
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${RELEASE_PROPERTIES_BASE64}" ]]; then
-            echo "Missing GitHub Actions secret NUVIO_LOCAL_PROPERTIES_BASE64." >&2
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "${sdk_root}" ]]; then
+            echo "Android SDK path is unavailable on this runner." >&2
             exit 1
           fi
-          if [[ -z "${RELEASE_KEYSTORE_BASE64}" ]]; then
-            echo "Missing GitHub Actions secret NUVIO_RELEASE_KEYSTORE_BASE64." >&2
-            exit 1
-          fi
+          printf 'sdk.dir=%s\nNUVIO_ANDROID_DISTRIBUTION=full\n' "${sdk_root}" > local.properties
 
-          keystore_path="${RUNNER_TEMP}/nuvio-release.jks"
-          printf '%s' "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > "${keystore_path}"
-          printf '%s' "${RELEASE_PROPERTIES_BASE64}" | base64 --decode > local.properties
-
-          sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
-          printf '\nNUVIO_RELEASE_STORE_FILE=%s\n' "${keystore_path}" >> local.properties
-
-          required_properties=(
-            NUVIO_RELEASE_STORE_PASSWORD
-            NUVIO_RELEASE_KEY_ALIAS
-            NUVIO_RELEASE_KEY_PASSWORD
-            TRAKT_CLIENT_ID
-            TRAKT_CLIENT_SECRET
-          )
-          for property_name in "${required_properties[@]}"; do
-            if ! grep -Eq "^${property_name}=.+" local.properties; then
-              echo "Missing required property in NUVIO_LOCAL_PROPERTIES_BASE64: ${property_name}" >&2
-              exit 1
-            fi
-          done
-
-      - name: Build full release APKs
+      - name: Build full-debug APK
         env:
           APP_VERSION: ${{ steps.release.outputs.version }}
-        run: ./gradlew :androidApp:assembleFullRelease -Pnuvio.app.versionName="${APP_VERSION}" --stacktrace
+        run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.app.versionName="${APP_VERSION}" --stacktrace
 
-      - name: Verify APK signatures and create checksums
+      - name: Verify APK signature and create checksum
         shell: bash
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          mapfile -t apks < <(find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print | sort)
-          if (( ${#apks[@]} == 0 )); then
-            echo "No full-release APKs were produced." >&2
+          source_apk="androidApp/build/outputs/apk/full/debug/androidApp-full-debug.apk"
+          if [[ ! -s "${source_apk}" ]]; then
+            echo "Expected full-debug APK was not produced: ${source_apk}" >&2
             exit 1
           fi
 
-          build_tools="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          for apk in "${apks[@]}"; do
-            "${build_tools}/apksigner" verify --verbose "${apk}"
-          done
-          sha256sum "${apks[@]}" > SHA256SUMS.txt
+          mkdir -p release-assets
+          apk="release-assets/Hearbor-${APP_VERSION}-full-debug.apk"
+          cp "${source_apk}" "${apk}"
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          build_tools="$(find "${sdk_root}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          if [[ -z "${build_tools}" || ! -x "${build_tools}/apksigner" ]]; then
+            echo "Android apksigner was not found in the installed build-tools." >&2
+            exit 1
+          fi
+          "${build_tools}/apksigner" verify --verbose "${apk}"
+          sha256sum "${apk}" > release-assets/SHA256SUMS.txt
 
           {
             echo
-            echo "### Generated APKs"
-            for apk in "${apks[@]}"; do
-              echo "- \`$(basename "${apk}")\`"
-            done
+            echo "### Generated test APK"
+            echo "- \`$(basename "${apk}")\` (package \`com.nuviodebug.com\`, version \`${APP_VERSION}\`)"
+            echo "- Signed with the runner's debug key; this is not a production update package."
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Attach APKs and checksums to the GitHub release
+      - name: Attach APK and checksum to the GitHub release
         run: |
-          mapfile -t apks < <(find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print | sort)
-          gh release upload "${RELEASE_TAG}" "${apks[@]}" SHA256SUMS.txt \
+          gh release upload "${RELEASE_TAG}" \
+            "release-assets/Hearbor-${{ steps.release.outputs.version }}-full-debug.apk" \
+            release-assets/SHA256SUMS.txt \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
