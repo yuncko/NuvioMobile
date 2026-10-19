@@ -1,0 +1,139 @@
+name: Build Android APK on release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published release tag to build or rebuild
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    name: Build signed Android APKs
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      RELEASE_PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+
+      - name: Validate release and read app version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "No release tag was supplied." >&2
+            exit 1
+          fi
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+
+          version="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' iosApp/Configuration/Version.xcconfig | head -n 1)"
+          if [[ -z "${version}" ]]; then
+            echo "MARKETING_VERSION is missing from Version.xcconfig." >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Android release build"
+            echo
+            echo "- Release tag: \`${RELEASE_TAG}\`"
+            echo "- App version: \`${version}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure release signing and app properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_PROPERTIES_BASE64}" ]]; then
+            echo "Missing GitHub Actions secret NUVIO_LOCAL_PROPERTIES_BASE64." >&2
+            exit 1
+          fi
+          if [[ -z "${RELEASE_KEYSTORE_BASE64}" ]]; then
+            echo "Missing GitHub Actions secret NUVIO_RELEASE_KEYSTORE_BASE64." >&2
+            exit 1
+          fi
+
+          keystore_path="${RUNNER_TEMP}/nuvio-release.jks"
+          printf '%s' "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > "${keystore_path}"
+          printf '%s' "${RELEASE_PROPERTIES_BASE64}" | base64 --decode > local.properties
+
+          sed -i -E '/^[[:space:]]*(sdk\.dir|NUVIO_RELEASE_STORE_FILE)[[:space:]]*=/d' local.properties
+          printf '\nNUVIO_RELEASE_STORE_FILE=%s\n' "${keystore_path}" >> local.properties
+
+          required_properties=(
+            NUVIO_RELEASE_STORE_PASSWORD
+            NUVIO_RELEASE_KEY_ALIAS
+            NUVIO_RELEASE_KEY_PASSWORD
+            TRAKT_CLIENT_ID
+            TRAKT_CLIENT_SECRET
+          )
+          for property_name in "${required_properties[@]}"; do
+            if ! grep -Eq "^${property_name}=.+" local.properties; then
+              echo "Missing required property in NUVIO_LOCAL_PROPERTIES_BASE64: ${property_name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build full release APKs
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: ./gradlew :androidApp:assembleFullRelease -Pnuvio.app.versionName="${APP_VERSION}" --stacktrace
+
+      - name: Verify APK signatures and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print | sort)
+          if (( ${#apks[@]} == 0 )); then
+            echo "No full-release APKs were produced." >&2
+            exit 1
+          fi
+
+          build_tools="$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          for apk in "${apks[@]}"; do
+            "${build_tools}/apksigner" verify --verbose "${apk}"
+          done
+          sha256sum "${apks[@]}" > SHA256SUMS.txt
+
+          {
+            echo
+            echo "### Generated APKs"
+            for apk in "${apks[@]}"; do
+              echo "- \`$(basename "${apk}")\`"
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Attach APKs and checksums to the GitHub release
+        run: |
+          mapfile -t apks < <(find androidApp/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' -print | sort)
+          gh release upload "${RELEASE_TAG}" "${apks[@]}" SHA256SUMS.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
