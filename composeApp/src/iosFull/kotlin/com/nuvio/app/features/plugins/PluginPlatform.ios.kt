@@ -23,6 +23,7 @@ import platform.posix.rewind
 
 internal object PluginStorage {
     private const val pluginsStateKey = "plugins_state"
+    private const val seededBuiltinRepositoriesKey = "seeded_builtin_repositories"
     private const val scraperCodeDirectoryName = "nuvio_plugin_scrapers"
     private val scraperCodeLock = SynchronizedObject()
 
@@ -33,6 +34,22 @@ internal object PluginStorage {
         NSUserDefaults.standardUserDefaults.setObject(
             payload,
             forKey = "${pluginsStateKey}_$profileId",
+        )
+    }
+
+    fun loadSeededBuiltinRepositoryUrls(profileId: Int): List<String> =
+        NSUserDefaults.standardUserDefaults
+            .stringForKey("${seededBuiltinRepositoriesKey}_$profileId")
+            .orEmpty()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+
+    fun saveSeededBuiltinRepositoryUrls(profileId: Int, urls: List<String>) {
+        NSUserDefaults.standardUserDefaults.setObject(
+            urls.distinct().joinToString("\n"),
+            forKey = "${seededBuiltinRepositoriesKey}_$profileId",
         )
     }
 

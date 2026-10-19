@@ -13,15 +13,21 @@ import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -81,13 +87,18 @@ actual object PluginRepository {
     private val persistenceGeneration = atomic(0L)
     private val persistenceRevision = atomic(0L)
     private val persistenceLock = SynchronizedObject()
+    private val builtInRepositorySeedLock = SynchronizedObject()
+    private val scraperFetchSemaphore = Semaphore(6)
     private val persistedRevisionByProfile = mutableMapOf<Int, Long>()
 
     actual fun initialize() {
         val effectiveProfileId = resolveEffectiveProfileId(ProfileRepository.activeProfileId)
         val shouldRefreshStoredRepos = !initialized || currentProfileId != effectiveProfileId
         ensureStateLoadedForProfile(effectiveProfileId)
-        if (!shouldRefreshStoredRepos) return
+        if (!shouldRefreshStoredRepos) {
+            ensureBuiltInRepositories()
+            return
+        }
 
         val state = _uiState.value
         val nowEpochMs = currentEpochMillis()
@@ -96,6 +107,7 @@ actual object PluginRepository {
         }.forEach { repo ->
             refreshRepositoryInternal(repo.manifestUrl, pushAfterRefresh = false, ensureInitialized = false)
         }
+        ensureBuiltInRepositories()
     }
 
     actual fun onProfileChanged(profileId: Int) {
@@ -128,8 +140,11 @@ actual object PluginRepository {
                 }
                 .decodeList<PluginRow>()
 
-            val urls = dedupeManifestUrls(rows.map { it.url })
             val existingState = _uiState.value
+            val locallyInstalledBuiltIns = existingState.repositories
+                .map(PluginRepositoryItem::manifestUrl)
+                .filter(BuiltInPluginRepositories::contains)
+            val urls = dedupeManifestUrls(rows.map { it.url } + locallyInstalledBuiltIns)
             val existingReposByUrl = existingState.repositories.associateBy { it.manifestUrl }
             val nowEpochMs = currentEpochMillis()
             val nextRepos = urls.map { url ->
@@ -163,12 +178,18 @@ actual object PluginRepository {
                 scrapers = nextScrapers,
             )
             persist()
+            val seededUrls = (
+                PluginStorage.loadSeededBuiltinRepositoryUrls(currentProfileId) +
+                    urls.filter(BuiltInPluginRepositories::contains)
+                ).distinct()
+            PluginStorage.saveSeededBuiltinRepositoryUrls(currentProfileId, seededUrls)
 
             nextRepos.filter(PluginRepositoryItem::isRefreshing).forEach { repository ->
                 refreshRepository(repository.manifestUrl, pushAfterRefresh = false)
             }
 
             initialized = true
+            ensureBuiltInRepositories()
         }.onFailure { error ->
             log.e(error) { "pullFromServer failed" }
         }
@@ -412,51 +433,76 @@ actual object PluginRepository {
             val manifest = PluginManifestParser.parse(payload)
             val baseUrl = manifestUrl.substringBefore("?").removeSuffix("/manifest.json")
 
-            val scrapers = manifest.scrapers
-                .filter { scraper -> scraper.isSupportedOnCurrentPlatform() }
-                .mapNotNull { info ->
-                    val codeUrl = if (info.filename.startsWith("http://") || info.filename.startsWith("https://")) {
-                        info.filename
-                    } else {
-                        "$baseUrl/${info.filename.trimStart('/')}"
-                    }
-                    runCatching {
-                        val code = httpGetText(codeUrl)
-                        val scraperId = "${manifestUrl.lowercase()}:${info.id}"
-                        val cached = PluginStorage.saveScraperCode(
-                            profileId = storageProfileId,
-                            scraperId = scraperId,
-                            code = code,
-                            overwrite = true,
-                        )
-                        if (!cached) {
-                            log.w { "Failed to cache plugin scraper $scraperId" }
-                        }
-                        val previous = previousScrapers[scraperId]
-                        val enabled = when {
-                            !info.enabled -> false
-                            previous != null -> previous.enabled
-                            else -> info.enabled
-                        }
+            val scrapers = coroutineScope {
+                manifest.scrapers
+                    .filter { scraper -> scraper.isSupportedOnCurrentPlatform() }
+                    .map { info ->
+                        async {
+                            val codeUrl = if (info.filename.startsWith("http://") || info.filename.startsWith("https://")) {
+                                info.filename
+                            } else {
+                                "$baseUrl/${info.filename.trimStart('/')}"
+                            }
+                            try {
+                                val code = try {
+                                    scraperFetchSemaphore.withPermit { httpGetText(codeUrl) }
+                                } catch (error: Exception) {
+                                    if (error is CancellationException) throw error
+                                    val fallbackUrl = if (
+                                        manifestUrl == BuiltInPluginRepositories.ANIME_NUVIO &&
+                                        info.filename == "src/providers/allanime.js"
+                                    ) {
+                                        "$baseUrl/providers/allanime.js"
+                                    } else {
+                                        null
+                                    }
+                                    if (fallbackUrl == null) throw error
+                                    log.w { "Primary AllAnime scraper path failed; retrying repository's providers/allanime.js path" }
+                                    scraperFetchSemaphore.withPermit { httpGetText(fallbackUrl) }
+                                }
+                                val scraperId = "${manifestUrl.lowercase()}:${info.id}"
+                                val cached = PluginStorage.saveScraperCode(
+                                    profileId = storageProfileId,
+                                    scraperId = scraperId,
+                                    code = code,
+                                    overwrite = true,
+                                )
+                                if (!cached) {
+                                    log.w { "Failed to cache plugin scraper $scraperId" }
+                                }
+                                val previous = previousScrapers[scraperId]
+                                val enabled = when {
+                                    !info.enabled -> false
+                                    previous != null -> previous.enabled
+                                    else -> info.enabled
+                                }
 
-                        PluginScraper(
-                            id = scraperId,
-                            repositoryUrl = manifestUrl,
-                            name = info.name,
-                            description = info.description.orEmpty(),
-                            version = info.version,
-                            filename = info.filename,
-                            supportedTypes = info.supportedTypes,
-                            enabled = enabled,
-                            manifestEnabled = info.enabled,
-                            hasSettings = info.hasSettings,
-                            logo = info.logo,
-                            contentLanguage = info.contentLanguage ?: emptyList(),
-                            formats = info.formats ?: info.supportedFormats,
-                            code = code,
-                        )
-                    }.getOrNull()
-                }
+                                PluginScraper(
+                                    id = scraperId,
+                                    repositoryUrl = manifestUrl,
+                                    name = info.name,
+                                    description = info.description.orEmpty(),
+                                    version = info.version,
+                                    filename = info.filename,
+                                    supportedTypes = info.supportedTypes,
+                                    enabled = enabled,
+                                    manifestEnabled = info.enabled,
+                                    hasSettings = info.hasSettings,
+                                    logo = info.logo,
+                                    contentLanguage = info.contentLanguage ?: emptyList(),
+                                    formats = info.formats ?: info.supportedFormats,
+                                    code = code,
+                                )
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }
+                    .awaitAll()
+                    .filterNotNull()
+            }
 
             val repo = PluginRepositoryItem(
                 manifestUrl = manifestUrl,
@@ -487,6 +533,49 @@ actual object PluginRepository {
         nowEpochMs: Long,
     ): Boolean = isPluginRepositoryRefreshDue(repository.lastUpdated, nowEpochMs) ||
         scrapers.count { scraper -> scraper.repositoryUrl == repository.manifestUrl } < repository.scraperCount
+
+    private fun ensureBuiltInRepositories() {
+        val urlsToRefresh = synchronized(builtInRepositorySeedLock) {
+            val currentState = _uiState.value
+            val installedUrls = currentState.repositories.map(PluginRepositoryItem::manifestUrl).toSet()
+            val previouslySeeded = PluginStorage.loadSeededBuiltinRepositoryUrls(currentProfileId).toSet()
+            val installedDefaults = installedUrls.filter(BuiltInPluginRepositories::contains)
+            val seededUrls = (previouslySeeded + installedDefaults).toList()
+            val urlsToAdd = BuiltInPluginRepositories.manifestUrls.filter { url ->
+                url !in installedUrls && url !in previouslySeeded
+            }
+
+            if (urlsToAdd.isNotEmpty()) {
+                _uiState.value = currentState.copy(
+                    repositories = currentState.repositories + urlsToAdd.map { url ->
+                        PluginRepositoryItem(
+                            manifestUrl = url,
+                            name = BuiltInPluginRepositories.displayName(url)
+                                ?: url.substringBefore("?").substringAfterLast('/'),
+                            isRefreshing = true,
+                        )
+                    },
+                )
+                persist()
+                pushToServer()
+            }
+            if (urlsToAdd.isNotEmpty() || seededUrls.toSet() != previouslySeeded) {
+                PluginStorage.saveSeededBuiltinRepositoryUrls(
+                    currentProfileId,
+                    (seededUrls + urlsToAdd).distinct(),
+                )
+            }
+            urlsToAdd
+        }
+
+        urlsToRefresh.forEach { manifestUrl ->
+            refreshRepositoryInternal(
+                manifestUrl = manifestUrl,
+                pushAfterRefresh = false,
+                ensureInitialized = false,
+            )
+        }
+    }
 
     private fun markRefreshing(manifestUrl: String) {
         _uiState.update { state ->

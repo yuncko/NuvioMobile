@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 internal object PluginStorage {
     private const val preferencesName = "nuvio_plugins"
     private const val pluginsStateKey = "plugins_state"
+    private const val seededBuiltinRepositoriesKey = "seeded_builtin_repositories"
     private const val scraperCodeDirectoryName = "nuvio_plugin_scrapers"
 
     private var preferences: SharedPreferences? = null
@@ -23,6 +24,22 @@ internal object PluginStorage {
         preferences
             ?.edit()
             ?.putString("${pluginsStateKey}_$profileId", payload)
+            ?.apply()
+    }
+
+    fun loadSeededBuiltinRepositoryUrls(profileId: Int): List<String> =
+        preferences
+            ?.getString("${seededBuiltinRepositoriesKey}_$profileId", null)
+            .orEmpty()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+
+    fun saveSeededBuiltinRepositoryUrls(profileId: Int, urls: List<String>) {
+        preferences
+            ?.edit()
+            ?.putString("${seededBuiltinRepositoriesKey}_$profileId", urls.distinct().joinToString("\n"))
             ?.apply()
     }
 

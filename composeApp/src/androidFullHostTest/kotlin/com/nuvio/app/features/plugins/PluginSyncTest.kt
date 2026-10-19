@@ -5,6 +5,7 @@ import com.nuvio.app.core.network.ServerConfiguration
 import com.nuvio.app.core.network.ServerConfigurationRepository
 import com.nuvio.app.core.network.ServerConfigurationStorage
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.features.addons.BuiltInAddonSources
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.AddonStorage
 import com.russhwolf.settings.SettingsInitializer
@@ -43,6 +44,8 @@ class PluginSyncTest {
         ServerConfigurationStorage.initialize(context)
         PluginRepository.clearLocalState()
         AddonRepository.clearLocalState()
+        PluginStorage.saveSeededBuiltinRepositoryUrls(1, BuiltInPluginRepositories.manifestUrls)
+        AddonStorage.saveSeededBuiltinAddonUrls(1, BuiltInAddonSources.manifestUrls)
         server.start()
         assertTrue(
             ServerConfigurationRepository.saveCustom(

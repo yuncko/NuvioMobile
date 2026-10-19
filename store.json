@@ -1,7 +1,7 @@
 {
-  "name": "Nuvio",
+  "name": "Hearbor",
   "subtitle": "A free, open-source media app for your phone, your desktop, and the TV you already own.",
-  "description": "A free, open-source media app for your phone, your desktop, and the TV you already own.\n\nBring your own sources. Nuvio turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.",
+  "description": "A free, open-source media app for your phone, your desktop, and the TV you already own.\n\nBring your own sources. Hearbor turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.",
   "website": "https://nuvio.tv",
   "iconURL": "https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/0.4.11/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png",
   "tintColor": "#1E88E5",
@@ -10,11 +10,11 @@
   ],
   "apps": [
     {
-      "name": "Nuvio",
+      "name": "Hearbor",
       "bundleIdentifier": "com.nuvio.media",
       "developerName": "NuvioMedia",
       "subtitle": "A free, open-source media app for your phone, your desktop, and the TV you already own.",
-      "localizedDescription": "A free, open-source media app for your phone, your desktop, and the TV you already own.\n\nBring your own sources. Nuvio turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.",
+      "localizedDescription": "A free, open-source media app for your phone, your desktop, and the TV you already own.\n\nBring your own sources. Hearbor turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.",
       "iconURL": "https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/0.4.11/iosApp/iosApp/Assets.xcassets/AppIcon.appiconset/app-icon-1024.png",
       "tintColor": "#1E88E5",
       "category": "entertainment",

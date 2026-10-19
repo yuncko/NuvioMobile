@@ -26,6 +26,7 @@ import platform.Foundation.NSUserDefaults
 actual object AddonStorage {
     private const val addonUrlsKey = "installed_manifest_urls"
     private const val addonEnabledStatesKey = "installed_manifest_enabled_states"
+    private const val seededBuiltinAddonUrlsKey = "seeded_builtin_addon_urls"
 
     actual fun loadInstalledAddonUrls(profileId: Int): List<String> =
         NSUserDefaults.standardUserDefaults
@@ -58,6 +59,22 @@ actual object AddonStorage {
         NSUserDefaults.standardUserDefaults.setObject(
             payload,
             forKey = "${addonEnabledStatesKey}_$profileId",
+        )
+    }
+
+    actual fun loadSeededBuiltinAddonUrls(profileId: Int): List<String> =
+        NSUserDefaults.standardUserDefaults
+            .stringForKey("${seededBuiltinAddonUrlsKey}_$profileId")
+            .orEmpty()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+
+    actual fun saveSeededBuiltinAddonUrls(profileId: Int, urls: List<String>) {
+        NSUserDefaults.standardUserDefaults.setObject(
+            urls.distinct().joinToString("\n"),
+            forKey = "${seededBuiltinAddonUrlsKey}_$profileId",
         )
     }
 }

@@ -1,22 +1,22 @@
 <div align="center">
 
-  <img src="https://nuvio.tv/assets/nuvio-app-logo-wordmark.webp" alt="Nuvio" width="320" />
+  <h1>Hearbor</h1>
 
   <p>
     A free, open-source media app for your phone, your desktop, and the TV you already own.
     <br />
-    Bring your own sources. Nuvio turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.
+    Bring your own sources. Hearbor turns them into a library with artwork, ratings, subtitles, and your place saved on every screen.
   </p>
 
-  [Website](https://nuvio.tv) · [GitHub releases](https://github.com/NuvioMedia/NuvioMobile/releases/latest) · [Support Nuvio](https://nuvio.tv/support)
+  [Website](https://nuvio.tv) · [GitHub releases](https://github.com/NuvioMedia/NuvioMobile/releases/latest) · [Support Hearbor](https://nuvio.tv/support)
 
 </div>
 
-## Get Nuvio Mobile
+## Get Hearbor Mobile
 
 - [Android on Google Play](https://play.google.com/store/apps/details?id=com.nuvio.app)
 - [Android APK](https://github.com/NuvioMedia/NuvioMobile/releases/latest)
-- iOS via AltStore or SideStore: add [this source URL](https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/cmp-rewrite/store.json) in the app's Sources section, then install Nuvio.
+- iOS via AltStore or SideStore: add [this source URL](https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/cmp-rewrite/store.json) in the app's Sources section, then install Hearbor.
 
 ## Build from source
 

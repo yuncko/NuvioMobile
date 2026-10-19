@@ -62,7 +62,15 @@ object AddonRepository {
 
     fun initialize() {
         val effectiveProfileId = resolveEffectiveProfileId(ProfileRepository.activeProfileId)
-        if (initialized) return
+        if (initialized) {
+            if (currentProfileId == effectiveProfileId) {
+                ensureDefaultAddonSources()
+                return
+            }
+            cancelActiveRefreshes()
+            _uiState.value = AddonsUiState()
+            initialized = false
+        }
         initialized = true
         currentProfileId = effectiveProfileId
         log.d { "initialize() — loading local addons for profile $currentProfileId" }
@@ -70,25 +78,26 @@ object AddonRepository {
         val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
         val enabledByUrl = loadLocalEnabledStates()
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
-        if (storedUrls.isEmpty()) return
-
         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
-        _uiState.value = AddonsUiState(
-            addons = storedUrls.map { manifestUrl ->
-                existingByUrl[manifestUrl].toPendingAddon(
-                    manifestUrl = manifestUrl,
-                    enabled = enabledByUrl[manifestUrl],
-                )
-            },
-        )
+        if (storedUrls.isNotEmpty()) {
+            _uiState.value = AddonsUiState(
+                addons = storedUrls.map { manifestUrl ->
+                    existingByUrl[manifestUrl].toPendingAddon(
+                        manifestUrl = manifestUrl,
+                        enabled = enabledByUrl[manifestUrl],
+                    )
+                },
+            )
 
-        storedUrls.forEach { manifestUrl ->
-            val existing = existingByUrl[manifestUrl]
-            val addon = _uiState.value.addons.firstOrNull { it.manifestUrl == manifestUrl }
-            if (addon?.enabled == true && (existing == null || (addon.manifest == null && !addon.isRefreshing))) {
-                refreshAddon(manifestUrl)
+            storedUrls.forEach { manifestUrl ->
+                val existing = existingByUrl[manifestUrl]
+                val addon = _uiState.value.addons.firstOrNull { it.manifestUrl == manifestUrl }
+                if (addon?.enabled == true && (existing == null || (addon.manifest == null && !addon.isRefreshing))) {
+                    refreshAddon(manifestUrl)
+                }
             }
         }
+        ensureDefaultAddonSources()
     }
 
     fun onProfileChanged(profileId: Int) {
@@ -129,7 +138,10 @@ object AddonRepository {
                 }
             }
 
-            val urls = rowsByUrl.keys.toList()
+            val retainedBuiltinUrls = _uiState.value.addons
+                .map(ManagedAddon::manifestUrl)
+                .filter(BuiltInAddonSources::contains)
+            val urls = (rowsByUrl.keys + retainedBuiltinUrls).distinct()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
             urls.forEachIndexed { i, u -> log.d { "  server[$i]: $u" } }
 
@@ -145,6 +157,11 @@ object AddonRepository {
                 },
             )
             persist()
+            val seededUrls = (
+                AddonStorage.loadSeededBuiltinAddonUrls(currentProfileId) +
+                    urls.filter(BuiltInAddonSources::contains)
+                ).distinct()
+            AddonStorage.saveSeededBuiltinAddonUrls(currentProfileId, seededUrls)
             urls.forEach { url ->
                 val existing = existingByUrl[url]
                 val addon = _uiState.value.addons.firstOrNull { it.manifestUrl == url }
@@ -153,6 +170,7 @@ object AddonRepository {
                 }
             }
             initialized = true
+            ensureDefaultAddonSources()
             log.i { "pullFromServer() — applied ${urls.size} addons to state" }
         }.onFailure { e ->
             log.e(e) { "pullFromServer() — FAILED" }
@@ -404,6 +422,41 @@ object AddonRepository {
             currentProfileId,
             addons.associate { it.manifestUrl to it.enabled },
         )
+    }
+
+    private fun ensureDefaultAddonSources() {
+        val existingUrls = _uiState.value.addons.map(ManagedAddon::manifestUrl).toSet()
+        val previouslySeeded = AddonStorage.loadSeededBuiltinAddonUrls(currentProfileId).toSet()
+        val alreadyInstalledBuiltins = existingUrls.filter(BuiltInAddonSources::contains)
+        val seededUrls = (previouslySeeded + alreadyInstalledBuiltins).toList()
+        if (seededUrls.toSet() != previouslySeeded) {
+            AddonStorage.saveSeededBuiltinAddonUrls(currentProfileId, seededUrls)
+        }
+
+        val urlsToAdd = BuiltInAddonSources.manifestUrls.filter { url ->
+            url !in existingUrls && url !in previouslySeeded
+        }
+        if (urlsToAdd.isEmpty()) return
+
+        _uiState.update { current ->
+            val currentUrls = current.addons.map(ManagedAddon::manifestUrl).toSet()
+            current.copy(
+                addons = current.addons + urlsToAdd
+                    .filterNot(currentUrls::contains)
+                    .map { url ->
+                        ManagedAddon(
+                            manifestUrl = url,
+                            userSetName = BuiltInAddonSources.displayName(url),
+                            enabled = true,
+                            isRefreshing = true,
+                        )
+                    },
+            )
+        }
+        persist()
+        AddonStorage.saveSeededBuiltinAddonUrls(currentProfileId, (seededUrls + urlsToAdd).distinct())
+        pushToServer()
+        urlsToAdd.forEach { url -> refreshAddon(url) }
     }
 
     private fun loadLocalEnabledStates(): Map<String, Boolean> =

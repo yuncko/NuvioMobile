@@ -184,6 +184,36 @@ internal fun AddonsSettingsPageContent(
                 )
             }
         }
+
+        SectionHeader(stringResource(Res.string.addons_section_unsupported))
+        NuvioSurfaceCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(Res.string.addons_unsupported_cloudstream_title),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                NuvioInfoBadge(text = stringResource(Res.string.addons_unsupported_badge))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(Res.string.addons_unsupported_cloudstream_description),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(Res.string.addons_unsupported_cloudstream_url),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 
     val pendingDeletionUrl = addonPendingDeletionUrl
